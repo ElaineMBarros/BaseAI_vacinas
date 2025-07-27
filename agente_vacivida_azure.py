@@ -169,6 +169,33 @@ class VaciVidaAI:
         else:
             return "🔄 Modo demonstração (dados fictícios)"
     
+    def _validar_sql(self, sql: str) -> str:
+        """
+        Valida e corrige a SQL gerada para usar apenas tabelas válidas
+        """
+        if not sql:
+            return sql
+        
+        # Substitui nomes incorretos de tabelas
+        sql_corrigida = sql
+        
+        # Padrões comuns de nomes incorretos que o LLM pode gerar
+        padroes_incorretos = [
+            (r'"?Tabela com doses de vacinas"?', "vcvd_dose"),
+            (r'"?tabela_doses"?', "vcvd_dose"),
+            (r'"?doses"?', "vcvd_dose"),
+            (r'"?vacinas"?', "vcvd_dose"),
+            (r'"?Tabela com eventos adversos"?', "vcvd_evento_adverso"),
+            (r'"?eventos_adversos"?', "vcvd_evento_adverso"),
+            (r'"?eventos"?', "vcvd_evento_adverso"),
+        ]
+        
+        import re
+        for padrao, tabela_correta in padroes_incorretos:
+            sql_corrigida = re.sub(padrao, tabela_correta, sql_corrigida, flags=re.IGNORECASE)
+        
+        return sql_corrigida
+
     def consultar(self, pergunta: str) -> dict:
         """
         Realiza uma consulta no banco de dados
@@ -180,7 +207,19 @@ class VaciVidaAI:
             dict: Resultado da consulta com SQL gerada e resposta
         """
         try:
-            resultado = self.db_chain.invoke({"query": pergunta})
+            # Melhorar o prompt para ser mais específico sobre as tabelas
+            pergunta_melhorada = f"""
+            Use APENAS as tabelas 'vcvd_dose' e 'vcvd_evento_adverso' que existem no banco.
+            NUNCA invente nomes de tabelas.
+            
+            Pergunta: {pergunta}
+            
+            Tabelas disponíveis:
+            - vcvd_dose: contém informações sobre doses de vacinas aplicadas
+            - vcvd_evento_adverso: contém informações sobre eventos adversos registrados
+            """
+            
+            resultado = self.db_chain.invoke({"query": pergunta_melhorada})
             
             # Extrair informações do resultado
             resposta = resultado.get("result", "Não foi possível obter resposta")
@@ -191,8 +230,9 @@ class VaciVidaAI:
                 for step in resultado["intermediate_steps"]:
                     if isinstance(step, dict) and "sql_cmd" in step:
                         sql_query = step["sql_cmd"]
-                        # Limpar a SQL de problemas comuns
+                        # Limpar e validar a SQL de problemas comuns
                         sql_query = self._limpar_sql(sql_query)
+                        sql_query = self._validar_sql(sql_query)
                         break
             
             return {
