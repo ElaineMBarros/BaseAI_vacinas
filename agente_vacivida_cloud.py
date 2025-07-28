@@ -6,6 +6,42 @@ from langchain_openai import ChatOpenAI
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_experimental.sql import SQLDatabaseChain
 from sqlalchemy import create_engine
+import re
+
+class FixedSQLDatabase(SQLDatabase):
+    """
+    SQLDatabase customizada que corrige nomes de tabelas antes da execução
+    """
+    
+    def run(self, command: str, *args, **kwargs):
+        """Override do método run para corrigir SQL antes da execução"""
+        # Corrige nomes incorretos de tabelas
+        command_corrigido = self._validar_sql(command)
+        return super().run(command_corrigido, *args, **kwargs)
+    
+    def _validar_sql(self, sql: str) -> str:
+        """
+        Valida e corrige a SQL gerada para usar apenas tabelas válidas
+        """
+        if not sql:
+            return sql
+        
+        # Padrões comuns de nomes incorretos que o LLM pode gerar
+        padroes_incorretos = [
+            (r'"?Tabela com doses de vacinas"?', "vcvd_dose"),
+            (r'"?tabela_doses"?', "vcvd_dose"),
+            (r'"?doses"?(?!\w)', "vcvd_dose"),  # Evita corrigir "doses" em outros contextos
+            (r'"?vacinas"?(?!\w)', "vcvd_dose"),
+            (r'"?Tabela com eventos adversos"?', "vcvd_evento_adverso"),
+            (r'"?eventos_adversos"?', "vcvd_evento_adverso"),
+            (r'"?eventos"?(?!\w)', "vcvd_evento_adverso"),
+        ]
+        
+        sql_corrigida = sql
+        for padrao, tabela_correta in padroes_incorretos:
+            sql_corrigida = re.sub(padrao, tabela_correta, sql_corrigida, flags=re.IGNORECASE)
+        
+        return sql_corrigida
 
 def criar_banco_demo():
     """Cria um banco de dados de demonstração com dados fictícios"""
@@ -89,12 +125,30 @@ class VaciVidaAI:
         # Primeiro tenta pegar do Streamlit secrets (para cloud)
         if hasattr(st, 'secrets') and 'OPENAI_API_KEY' in st.secrets:
             api_key = st.secrets["OPENAI_API_KEY"]
+            st.info("🔑 Usando chave da OpenAI dos secrets do Streamlit")
         # Senão, tenta pegar do .env (para local)
         else:
             api_key = os.getenv("OPENAI_API_KEY")
+            if api_key and api_key != "YOUR_API_KEY_HERE":
+                st.info("🔑 Usando chave da OpenAI do arquivo .env")
+            else:
+                api_key = None
         
         if not api_key:
-            raise ValueError("A variável de ambiente OPENAI_API_KEY não está definida.")
+            error_msg = """
+            ❌ A chave da OpenAI não está configurada!
+            
+            **Para Streamlit Cloud:**
+            1. Vá em Settings → Secrets
+            2. Adicione: `OPENAI_API_KEY = "sua_chave_aqui"`
+            3. Reinicie o app
+            
+            **Para local:**
+            1. Edite o arquivo .env
+            2. `OPENAI_API_KEY="sua_chave_aqui"`
+            """
+            st.error(error_msg)
+            raise ValueError("Chave da OpenAI não configurada")
         
         os.environ["OPENAI_API_KEY"] = api_key
         
@@ -106,7 +160,7 @@ class VaciVidaAI:
             db_path = "vacivida.db"
             
         self.engine = create_engine(f"sqlite:///{db_path}")
-        self.db = SQLDatabase(
+        self.db = FixedSQLDatabase(
             self.engine, 
             sample_rows_in_table_info=3, 
             max_string_length=300, 
